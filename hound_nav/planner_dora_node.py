@@ -15,11 +15,15 @@ import time
 import traceback
 from typing import Any, Dict, Optional
 
+from hound_nav.cuda_cache import ensure_torch_extensions_dir
+from hound_nav.deps_path import setup_dependency_paths
+
+_jit_dir = ensure_torch_extensions_dir()
+print(f"[hound_planner] TORCH_EXTENSIONS_DIR={_jit_dir}", flush=True)
+
 import numpy as np
 import torch
 from dora import Node
-
-from hound_nav.deps_path import setup_dependency_paths
 from hound_nav.pdef_codec import pack_plan, unpack_pdef
 
 
@@ -103,6 +107,11 @@ def main() -> None:
     )
 
     planner = None
+    dt_sum = 0.0
+    dt_n = 0
+    n_ok = 0
+    dt_log_t = 0.0
+    log_period_s = 1.0
     dora = Node()
     for event in dora:
         if event is None or event.get("type") == "STOP":
@@ -149,19 +158,39 @@ def main() -> None:
             traceback.print_exc()
             ok, path, expansions = False, None, 0
         dt = time.perf_counter() - t0
-        arr, meta = pack_plan(
-            path, success=ok, expansions=expansions, query_t=query_t
-        )
-        dora.send_output("plan", arr, meta)
         n = 0 if path is None else len(path)
         gxy = pdef["goal"]
         sxy = pdef["start"]
         gdist = float(np.linalg.norm(sxy[:2] - gxy[:2]))
-        print(
-            f"[hound_planner] ok={ok} n={n} exp={expansions} dt={dt:.3f}s "
-            f"goal_dist={gdist:.2f}m",
-            flush=True,
+        arr, meta = pack_plan(
+            path,
+            success=ok,
+            expansions=expansions,
+            query_t=query_t,
+            dt_s=dt,
+            goal_dist_m=gdist,
+            expansion_limit=int(pdef.get("expansion_limit", 0)),
         )
+        dora.send_output("plan", arr, meta)
+        dt_sum += dt
+        dt_n += 1
+        if ok:
+            n_ok += 1
+        now = time.perf_counter()
+        if dt_log_t <= 0.0:
+            dt_log_t = now
+        elif now - dt_log_t >= log_period_s:
+            mean_dt = dt_sum / max(dt_n, 1)
+            print(
+                f"[hound_planner] dt={mean_dt:.3f}s (n={dt_n} ok={n_ok} "
+                f"last={dt:.3f}s ok={ok} path={n} exp={expansions} "
+                f"goal_dist={gdist:.2f}m)",
+                flush=True,
+            )
+            dt_log_t = now
+            dt_sum = 0.0
+            dt_n = 0
+            n_ok = 0
 
 
 if __name__ == "__main__":

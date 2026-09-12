@@ -11,25 +11,19 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
-from torch.utils.cpp_extension import load
+
+from hound_nav.cuda_cache import load_extension
 
 
 def _load_kernel():
     cuda_dir = Path(__file__).resolve().parent / "cuda"
     cpp = str(cuda_dir / "tracking_cost.cpp")
     cu = str(cuda_dir / "tracking_cost.cu")
-    # Jetson: prefer sm_87 (Orin) when TORCH_CUDA_ARCH_LIST unset.
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.7")
-    kwargs = {}
-    ext_dir = os.environ.get("TORCH_EXTENSIONS_DIR")
-    if ext_dir:
-        kwargs["build_directory"] = ext_dir
-    return load(
-        name="hound_tracking_cost",
-        sources=[cpp, cu],
-        verbose=False,
+    return load_extension(
+        "hound_tracking_cost",
+        [cpp, cu],
         extra_cuda_cflags=["-O3", "--use_fast_math"],
-        **kwargs,
     )
 
 

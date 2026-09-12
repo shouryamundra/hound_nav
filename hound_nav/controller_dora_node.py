@@ -17,6 +17,12 @@ import time
 import traceback
 from typing import Any, Dict
 
+from hound_nav.cuda_cache import ensure_torch_extensions_dir
+from hound_nav.deps_path import setup_dependency_paths
+
+_jit_dir = ensure_torch_extensions_dir()
+print(f"[hound_controller] TORCH_EXTENSIONS_DIR={_jit_dir}", flush=True)
+
 import numpy as np
 import rclpy
 import torch
@@ -24,8 +30,6 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from dora import Node
 from rclpy.node import Node as RosNode
 from rclpy.qos import qos_profile_sensor_data
-
-from hound_nav.deps_path import setup_dependency_paths
 from hound_nav.pdef_codec import unpack_map, unpack_track
 
 
@@ -112,6 +116,11 @@ def main() -> None:
     action = np.zeros(2, dtype=np.float64)
     cooldown_until = 0.0
     map_ready = False
+    dt_sum = 0.0
+    dt_n = 0
+    dt_log_t = 0.0
+    log_period_s = 1.0
+    cv_log_t = 0.0
 
     def _publish(act: np.ndarray) -> None:
         msg = AckermannDriveStamped()
@@ -180,6 +189,7 @@ def main() -> None:
             continue
 
         try:
+            t0 = time.perf_counter()
             # LocalMap is odom-aligned; origin is SW. MPPI BEV lookup is
             # (xy + map_size/2)/res, so xy=0 is the grid center (origin + half
             # extent), not the robot. Track horizon is robot-relative: restore
@@ -213,11 +223,34 @@ def main() -> None:
             action[1] = float(np.clip(action[1], min_spd, max_spd))
 
             now = time.perf_counter()
+            dt = now - t0
+            dt_sum += dt
+            dt_n += 1
+            if dt_log_t <= 0.0:
+                dt_log_t = now
+            elif now - dt_log_t >= log_period_s:
+                mean_dt = dt_sum / max(dt_n, 1)
+                print(
+                    f"[hound_controller] dt={mean_dt*1e3:.1f}ms "
+                    f"(n={dt_n} last={dt*1e3:.1f}ms) "
+                    f"steer={action[0]:.3f} spd={action[1]:.2f}",
+                    flush=True,
+                )
+                dt_log_t = now
+                dt_sum = 0.0
+                dt_n = 0
             if controller.Costs.constraint_violation:
                 action = np.zeros(2)
                 if state.size > 6 and state[6] > 0.5:
                     controller.reset()
                 cooldown_until = now + cooldown_s
+                if now - cv_log_t >= 1.0:
+                    cv_log_t = now
+                    print(
+                        f"\033[31m[hound_controller] constraint_violation "
+                        f"(all samples lethal) halt {dt*1e3:.1f}ms\033[0m",
+                        flush=True,
+                    )
             if now < cooldown_until:
                 action = np.zeros(2)
                 action[1] = 0.0  # m/s light reverse during cooldown

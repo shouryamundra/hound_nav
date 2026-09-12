@@ -22,6 +22,7 @@ import math
 import numpy as np
 import rclpy
 from dora import Node
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import Path
 from rclpy.duration import Duration
@@ -35,7 +36,7 @@ from hound_mapping.msg import LocalMap
 from hound_nav.deps_path import setup_dependency_paths
 from hound_nav.pdef_buffer import LocalMapSnapshot, PDefBuffer
 from hound_nav.pdef_codec import pack_map, pack_pdef, pack_track, unpack_plan
-from hound_nav.planner_viz import PlannerVisFrame, PlannerVisWorker
+from hound_nav.planner_viz import PlannerVisFrame, PlannerVisWorker, car_dims_m
 from hound_nav.traj_buffer import TrajBuffer
 from hound_nav.utils import update_goal
 
@@ -82,11 +83,17 @@ class ManagerRos(RosNode):
         self._plan_marker_pub = self.create_publisher(
             MarkerArray, plan_markers_topic, 1
         )
+        diag_topic = str(
+            launch_cfg.get("plan_diagnostics_topic", "/hound_nav/planner_diagnostics")
+        )
+        self._plan_diag_pub = self.create_publisher(DiagnosticArray, diag_topic, 10)
         self._plan_frame = "odom"
         self._logged_map = False
         self._logged_state = False
         self._logged_map_skip = False
         self._logged_state_skip = False
+        self._goal_log_t = 0.0
+        self._goal_log_xy = (None, None)
         self._map_rx_last = 0.0
         self._map_rx_window_t0 = 0.0
         self._map_rx_window_n = 0
@@ -145,7 +152,7 @@ class ManagerRos(RosNode):
             self._map_rx_window_t0 = now
         self._map_rx_window_n += 1
         win_s = now - self._map_rx_window_t0
-        if win_s >= 1.0 and self._map_rx_window_n >= 2:
+        if win_s >= 5.0 and self._map_rx_window_n >= 2:
             mean_hz = (self._map_rx_window_n - 1) / win_s
             line = (
                 f"[hound_manager] local_map rx {mean_hz:.2f} Hz "
@@ -154,7 +161,6 @@ class ManagerRos(RosNode):
                 f" stamp_dt={stamp_ms:.1f}ms"
             )
             print(line, flush=True)
-            self.get_logger().info(line)
             self._map_rx_window_t0 = now
             self._map_rx_window_n = 1
             self._map_rx_period_min = 1.0e9
@@ -208,16 +214,27 @@ class ManagerRos(RosNode):
         y = float(msg.pose.position.y)
         self._buffer.set_waypoints(np.array([[x, y]], dtype=np.float64))
         frame = str(msg.header.frame_id or "")
-        line = f"[hound_manager] rviz goal: ({x:.2f},{y:.2f}) frame={frame!r}"
-        print(line, flush=True)
-        self.get_logger().info(line)
+        now = time.perf_counter()
+        same = (
+            self._goal_log_xy[0] is not None
+            and abs(x - float(self._goal_log_xy[0])) < 0.05
+            and abs(y - float(self._goal_log_xy[1])) < 0.05
+        )
+        if same and (now - self._goal_log_t) < 2.0:
+            return
+        self._goal_log_t = now
+        self._goal_log_xy = (x, y)
+        print(
+            f"[hound_manager] rviz goal: ({x:.2f},{y:.2f}) frame={frame!r}",
+            flush=True,
+        )
 
-    def publish_plan(self, path: np.ndarray) -> None:
+    def publish_plan(self, path: np.ndarray, stamp=None):
         """Path: x,y,yaw, stamp=t0+|g|, z=g*time_direction. Arrows: green fwd, blue back."""
         arr = np.asarray(path, dtype=np.float64)
         if arr.ndim != 2 or arr.shape[0] < 1:
-            return
-        now = self.get_clock().now()
+            return None
+        now = stamp if stamp is not None else self.get_clock().now()
         frame = self._plan_frame
         out = Path()
         out.header.stamp = now.to_msg()
@@ -277,6 +294,41 @@ class ManagerRos(RosNode):
             markers.markers.append(m)
         self._plan_pub.publish(out)
         self._plan_marker_pub.publish(markers)
+        return now
+
+    def publish_planner_diag(self, stamp, diag: Dict[str, Any]) -> None:
+        """Same header.stamp as local_plan Path (or this tick if no path)."""
+        msg = DiagnosticArray()
+        if hasattr(stamp, "to_msg"):
+            msg.header.stamp = stamp.to_msg()
+        else:
+            msg.header.stamp = stamp
+        msg.header.frame_id = self._plan_frame
+        st = DiagnosticStatus()
+        st.name = "hound_planner"
+        ok = bool(diag.get("ok", False))
+        st.level = DiagnosticStatus.OK if ok else DiagnosticStatus.ERROR
+        st.message = "ok" if ok else "no path"
+        st.values = [
+            KeyValue(key="ok", value="1" if ok else "0"),
+            KeyValue(key="expansions", value=str(int(diag.get("expansions", 0)))),
+            KeyValue(
+                key="expansion_limit",
+                value=str(int(diag.get("expansion_limit", 0))),
+            ),
+            KeyValue(key="dt_s", value=f"{float(diag.get('dt_s', float('nan'))):.6f}"),
+            KeyValue(key="path_n", value=str(int(diag.get("path_n", 0)))),
+            KeyValue(
+                key="goal_dist_m",
+                value=f"{float(diag.get('goal_dist_m', float('nan'))):.4f}",
+            ),
+            KeyValue(
+                key="query_t",
+                value=f"{float(diag.get('query_t', float('nan'))):.6f}",
+            ),
+        ]
+        msg.status = [st]
+        self._plan_diag_pub.publish(msg)
 
 
 def _yaw_to_quat(yaw: float) -> Quaternion:
@@ -294,6 +346,7 @@ def main() -> None:
     lookahead = as_float(Config["lookahead"])
     wp_radius = as_float(Config["wp_radius"])
     planner_cfg = Config["Planner_config"]
+    car_length_m, car_width_m = car_dims_m(planner_cfg)
     hysteresis = int(planner_cfg["experiment_info_default"]["hysteresis"])
     default_expansion_limit = int(
         planner_cfg["experiment_info_default"]["max_expansions"]
@@ -341,6 +394,7 @@ def main() -> None:
 
     print(
         f"[hound_manager] up T={timesteps} exp={expansion_limit} "
+        f"wp_radius={wp_radius:.2f}m "
         f"track_ref={track_ref_metric} L={screw_length_m:.3f} "
         f"cv_viz={planner_cv_viz} "
         "(plan start = live robot, LocalMap native grid)",
@@ -386,6 +440,8 @@ def main() -> None:
                 wp_radius=float(wp_radius),
                 ok=bool(ok),
                 expansions=int(expansions),
+                car_length=float(car_length_m),
+                car_width=float(car_width_m),
                 note=str(note),
             )
         )
@@ -484,11 +540,15 @@ def main() -> None:
         query_outstanding = True
         query_sent_t = query_t
         last_pdef_t = now
-        print(
-            f"[hound_manager] pdef sent exp={expansion_limit} "
-            f"goal=({float(goal[0]):.2f},{float(goal[1]):.2f})",
-            flush=True,
-        )
+        if not hasattr(_maybe_send_pdef, "_log_t"):
+            _maybe_send_pdef._log_t = 0.0
+        if now - float(_maybe_send_pdef._log_t) >= 2.0:
+            _maybe_send_pdef._log_t = now
+            print(
+                f"[hound_manager] pdef exp={expansion_limit} "
+                f"goal=({float(goal[0]):.2f},{float(goal[1]):.2f})",
+                flush=True,
+            )
 
     def _maybe_send_track(dora_node: Node) -> None:
         nonlocal last_track_stamp
@@ -534,7 +594,7 @@ def main() -> None:
                 continue
             eid = event.get("id")
             if eid == "plan":
-                path, ok, expansions, query_t = unpack_plan(
+                path, ok, expansions, query_t, diag = unpack_plan(
                     event.get("value"), event.get("metadata") or {}
                 )
                 query_outstanding = False
@@ -547,13 +607,15 @@ def main() -> None:
                     expansions=last_vis_exp,
                     note="plan",
                 )
+                stamp = ros.get_clock().now()
                 if ok and path is not None:
                     traj.replace(path)
                     first_path = True
                     expansion_limit = default_expansion_limit
-                    ros.publish_plan(path)
+                    ros.publish_plan(path, stamp=stamp)
                 elif not first_path:
                     expansion_limit = min(expansion_limit * 2, unstuck)
+                ros.publish_planner_diag(stamp, diag)
                 continue
             if eid == "tick":
                 miss = (

@@ -142,10 +142,14 @@ def pack_plan(
     success: bool,
     expansions: int,
     query_t: float = 0.0,
+    dt_s: float = float("nan"),
+    goal_dist_m: float = float("nan"),
+    expansion_limit: int = 0,
 ) -> Tuple[pa.Array, Dict[str, Any]]:
     if path is None or len(path) == 0:
         arr = np.zeros((0, 4), dtype=np.float64)
         success = False
+        path_n = 0
     else:
         arr = np.ascontiguousarray(path, dtype=np.float64)
         if arr.ndim == 1:
@@ -154,6 +158,7 @@ def pack_plan(
             pad = np.zeros((arr.shape[0], 4), dtype=np.float64)
             pad[:, : arr.shape[1]] = arr
             arr = pad
+        path_n = int(arr.shape[0])
         # Keep cols after x,y,yaw,v — last is g*time_direction (fwd/back viz).
     meta = {
         "n": int(arr.shape[0]),
@@ -161,25 +166,39 @@ def pack_plan(
         "success": bool(success),
         "expansions": int(expansions),
         "query_t": float(query_t),
+        "dt_s": float(dt_s),
+        "path_n": int(path_n),
+        "goal_dist_m": float(goal_dist_m),
+        "expansion_limit": int(expansion_limit),
     }
     return _arrow_f64(arr), meta
 
 
 def unpack_plan(
     buf: Any, meta: Dict[str, Any]
-) -> Tuple[Optional[np.ndarray], bool, int, float]:
+) -> Tuple[Optional[np.ndarray], bool, int, float, Dict[str, Any]]:
     n = int(meta.get("n", 0))
     cols = int(meta.get("cols", 4))
     success = bool(meta.get("success", False))
     expansions = int(meta.get("expansions", 0))
     query_t = float(meta.get("query_t", 0.0))
+    diag = {
+        "ok": success,
+        "expansions": expansions,
+        "expansion_limit": int(meta.get("expansion_limit", 0)),
+        "dt_s": float(meta.get("dt_s", float("nan"))),
+        "path_n": int(meta.get("path_n", n if success else 0)),
+        "goal_dist_m": float(meta.get("goal_dist_m", float("nan"))),
+        "query_t": query_t,
+    }
     if n <= 0 or not success:
-        return None, False, expansions, query_t
+        return None, False, expansions, query_t, diag
     flat = _from_arrow(buf, np.float64)
     need = n * cols
     if flat.size < need:
-        return None, False, expansions, query_t
-    return flat[:need].reshape(n, cols), True, expansions, query_t
+        diag["ok"] = False
+        return None, False, expansions, query_t, diag
+    return flat[:need].reshape(n, cols), True, expansions, query_t, diag
 
 
 def pack_track(

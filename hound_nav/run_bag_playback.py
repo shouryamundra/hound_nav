@@ -30,6 +30,7 @@ from hound_nav.bag_problem_io import (
     world_to_map_xy,
 )
 from hound_nav.deps_path import setup_dependency_paths
+from hound_nav.planner_viz import car_dims_m, visualize_map_with_path
 
 
 def _bitmap(cost: np.ndarray, height: np.ndarray) -> torch.Tensor:
@@ -97,6 +98,99 @@ def _save_pkl(obj: Any, path: Path) -> None:
         pickle.dump(obj, f)
 
 
+def _map_offset(bitmap: torch.Tensor, map_res: float) -> np.ndarray:
+    return float(map_res) * np.array(bitmap.shape[:2], dtype=np.float64) * 0.5
+
+
+def _planner_xy_to_world(
+    xy: np.ndarray, map_center: np.ndarray, offset: np.ndarray
+) -> np.ndarray:
+    return np.asarray(xy[:2], dtype=np.float64) - offset[:2] + np.asarray(
+        map_center[:2], dtype=np.float64
+    )
+
+
+def _best_path_world(planner: Any, bitmap: torch.Tensor, map_center: np.ndarray, map_res: float):
+    try:
+        path = planner.get_best_path()
+    except Exception:
+        return None
+    path_np = path.numpy() if hasattr(path, "numpy") else np.asarray(path)
+    if path_np.size == 0 or path_np.ndim != 2:
+        return None
+    path_np = np.flip(np.asarray(path_np, dtype=np.float64), axis=0).copy()
+    offset = _map_offset(bitmap, map_res)
+    path_np[..., :2] = path_np[..., :2] - offset + np.asarray(map_center[:2], dtype=np.float64)
+    return path_np
+
+
+def _show_cv_query(
+    *,
+    window: str,
+    bitmap: torch.Tensor,
+    start: torch.Tensor,
+    goal: torch.Tensor,
+    map_center: np.ndarray,
+    map_res: float,
+    path_world: Optional[np.ndarray],
+    ok: bool,
+    expansions: int,
+    note: str,
+    map_size: int = 480,
+    wp_radius: float = 1.0,
+    car_length: float = 0.90,
+    car_width: float = 0.55,
+) -> None:
+    import cv2
+
+    cost = np.ascontiguousarray(bitmap[..., 0].detach().cpu().numpy(), dtype=np.float32)
+    height = np.ascontiguousarray(bitmap[..., 1].detach().cpu().numpy(), dtype=np.float32)
+    offset = _map_offset(bitmap, map_res)
+    start_w = _planner_xy_to_world(start.detach().cpu().numpy(), map_center, offset)
+    goal_w = _planner_xy_to_world(goal.detach().cpu().numpy(), map_center, offset)
+    state = np.array(
+        [float(start_w[0]), float(start_w[1]), float(start[2])], dtype=np.float64
+    )
+    extent_m = float(cost.shape[0]) * float(map_res)
+    resolution_inv = float(map_size) / extent_m if extent_m > 1e-6 else 1.0
+    img = visualize_map_with_path(
+        cost,
+        height,
+        path_world,
+        goal_w,
+        state,
+        wp_radius,
+        np.asarray(map_center[:2], dtype=np.float64),
+        map_size,
+        resolution_inv,
+        car_length,
+        car_width,
+    )
+    status = "OK" if ok else "FAIL"
+    n = 0 if path_world is None else len(path_world)
+    label = f"{note} {status} exp={expansions} n={n}"
+    cv2.putText(img, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.putText(img, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+    cv2.imshow(window, img)
+    cv2.waitKey(1)
+
+
+_cv_viz_failed = False
+
+
+def _try_show_cv_query(**kwargs: Any) -> bool:
+    global _cv_viz_failed
+    if _cv_viz_failed:
+        return False
+    try:
+        _show_cv_query(**kwargs)
+        return True
+    except Exception as exc:
+        print(f"[cv-viz] disabled: {type(exc).__name__}: {exc}", flush=True)
+        _cv_viz_failed = True
+        return False
+
+
 def run_playback(
     problems_dir: Path,
     *,
@@ -109,6 +203,8 @@ def run_playback(
     max_problems: Optional[int],
     free_costmap: bool = False,
     problems_subdir: str = "problems",
+    overwrite: bool = False,
+    cv_viz: bool = True,
 ) -> None:
     setup_dependency_paths()
     from ighastar.scripts.common_utils import create_planner
@@ -128,35 +224,85 @@ def run_playback(
 
     uni = create_planner(deepcopy(planner_cfg), bidirectional=False) if run_igha else None
     bi = create_planner(deepcopy(planner_cfg), bidirectional=True) if run_bi else None
+    car_length_m, car_width_m = car_dims_m(planner_cfg)
 
     n = len(problems)
     for i, path in enumerate(problems):
+        uni_path = results_dir / f"IGHAStar_test_{i}_0_bag.pkl"
+        bi_path = results_dir / f"BiIGHAStar_LCR_1_{i}_0_bag.pkl"
+        need_uni = uni is not None and (overwrite or not uni_path.is_file())
+        need_bi = bi is not None and (overwrite or not bi_path.is_file())
+        if not need_uni and not need_bi:
+            print(f"[{i + 1}/{n}] {path.name} skip (exists)", flush=True)
+            continue
         prob = np.load(path)
         start, goal, bitmap = _start_goal_tensors(prob, free_costmap=free_costmap)
         if cruise_speed is not None:
             goal[3] = float(cruise_speed)
         print(
             f"[{i + 1}/{n}] {path.name} start=({float(start[0]):.2f},{float(start[1]):.2f}) "
-            f"goal=({float(goal[0]):.2f},{float(goal[1]):.2f}) v={float(start[3]):.2f}",
+            f"goal=({float(goal[0]):.2f},{float(goal[1]):.2f}) v={float(start[3]):.2f}"
+            f"{' uni' if need_uni else ''}{' bi' if need_bi else ''}",
             flush=True,
         )
-        if uni is not None:
+        map_center = np.asarray(prob["map_center"], dtype=np.float64)
+        map_res = float(prob["resolution"])
+        if need_uni:
             t0 = time.perf_counter()
-            uni.search(start, goal, bitmap, int(exp), hyst, True)
+            ok_uni = bool(uni.search(start, goal, bitmap, int(exp), hyst, True))
             dt = time.perf_counter() - t0
-            _save_pkl(
-                _profiler_result(uni.get_profiler_info(), dt),
-                results_dir / f"IGHAStar_test_{i}_0_bag.pkl",
-            )
-        if bi is not None:
+            prof = uni.get_profiler_info()
+            _save_pkl(_profiler_result(prof, dt), uni_path)
+            if cv_viz:
+                n_exp = int(prof[7]) if prof is not None and len(prof) > 7 else 0
+                _try_show_cv_query(
+                    window="IGHA*",
+                    bitmap=bitmap,
+                    start=start,
+                    goal=goal,
+                    map_center=map_center,
+                    map_res=map_res,
+                    path_world=_best_path_world(uni, bitmap, map_center, map_res)
+                    if ok_uni
+                    else None,
+                    ok=ok_uni,
+                    expansions=n_exp,
+                    note=f"[{i + 1}/{n}] IGHA*",
+                    car_length=car_length_m,
+                    car_width=car_width_m,
+                )
+        if need_bi:
             t0 = time.perf_counter()
-            bi.search(start, goal, bitmap, int(exp), hyst, True)
+            ok_bi = bool(bi.search(start, goal, bitmap, int(exp), hyst, True))
             dt = time.perf_counter() - t0
-            _save_pkl(
-                _profiler_result(bi.get_profiler_info(), dt),
-                results_dir / f"BiIGHAStar_LCR_1_{i}_0_bag.pkl",
-            )
+            prof = bi.get_profiler_info()
+            _save_pkl(_profiler_result(prof, dt), bi_path)
+            if cv_viz:
+                n_exp = int(prof[7]) if prof is not None and len(prof) > 7 else 0
+                _try_show_cv_query(
+                    window="BiIGHA*",
+                    bitmap=bitmap,
+                    start=start,
+                    goal=goal,
+                    map_center=map_center,
+                    map_res=map_res,
+                    path_world=_best_path_world(bi, bitmap, map_center, map_res)
+                    if ok_bi
+                    else None,
+                    ok=ok_bi,
+                    expansions=n_exp,
+                    note=f"[{i + 1}/{n}] BiIGHA*",
+                    car_length=car_length_m,
+                    car_width=car_width_m,
+                )
         gc.collect()
+    if cv_viz:
+        try:
+            import cv2
+
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
     print(f"results → {results_dir}", flush=True)
 
 
@@ -436,6 +582,18 @@ def main() -> None:
         default="problems",
         help="Problem folder under problems_dir (e.g. problems_8m)",
     )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Re-run searches even if result pickles already exist",
+    )
+    p.add_argument(
+        "--cv-viz",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="OpenCV costmap/path/start/goal after each search (non-blocking). "
+        "Use --no-cv-viz to disable.",
+    )
     args = p.parse_args()
     problems_dir = args.problems_dir.expanduser().resolve()
     if args.viser:
@@ -473,6 +631,8 @@ def main() -> None:
             max_problems=args.max_problems,
             free_costmap=args.free_costmap,
             problems_subdir=args.problems_subdir,
+            overwrite=args.overwrite,
+            cv_viz=bool(args.cv_viz),
         )
     plot_cost_playback(results_dir, args.algorithms, args.exp)
 

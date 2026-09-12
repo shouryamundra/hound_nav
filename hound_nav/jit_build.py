@@ -1,4 +1,4 @@
-"""Force JIT build of nav CUDA kernels into ``hound_nav/cache/``.
+"""Force JIT build of nav CUDA kernels into ``$ROS_WORKSPACE/cache/torch_extensions``.
 
 Builds:
   - mppi analytical bicycle dynamics
@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="Wipe hound_nav/cache/torch_extensions before building",
+        help="Wipe $ROS_WORKSPACE/cache/torch_extensions before building",
     )
     parser.add_argument(
         "--skip-planner",
@@ -45,8 +45,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from hound_nav.cuda_cache import (
         ensure_torch_extensions_dir,
-        repo_root,
         torch_extensions_dir,
+        workspace_root,
     )
     from hound_nav.deps_path import setup_dependency_paths
 
@@ -83,10 +83,20 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_planner:
         t0 = time.perf_counter()
         print("[jit_build] building ighastar kinodynamic …", flush=True)
+        import os
+
         import yaml
         from ighastar.scripts.common_utils import create_planner
 
-        ssot = repo_root().parent / "hound_core" / "config" / "SSoT.yaml"
+        from hound_nav.bag_problem_io import find_ssot_yaml
+
+        env_ssot = str(os.environ.get("HOUND_SSOT") or "").strip()
+        ssot = Path(env_ssot) if env_ssot else None
+        if ssot is None or not ssot.is_file():
+            try:
+                ssot = find_ssot_yaml()
+            except FileNotFoundError:
+                ssot = workspace_root() / "src" / "hound_core" / "config" / "SSoT.yaml"
         if not ssot.is_file():
             raise FileNotFoundError(f"SSoT not found: {ssot}")
         with ssot.open(encoding="utf-8") as f:

@@ -37,7 +37,7 @@ def find_repo(name: str) -> Path:
 def setup_dependency_paths() -> dict[str, Path]:
     """Insert dependency roots on sys.path (idempotent).
 
-    Also pins Torch CUDA JIT builds to ``hound_nav/cache/torch_extensions``.
+    Also pins Torch CUDA JIT builds to ``$ROS_WORKSPACE/cache/torch_extensions``.
     """
     from hound_nav.cuda_cache import ensure_torch_extensions_dir
 

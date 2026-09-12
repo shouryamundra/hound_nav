@@ -34,6 +34,14 @@ def paint_cost_elev_map(
     return display_img
 
 
+def car_dims_m(planner_cfg: dict) -> tuple[float, float]:
+    """Planner footprint from SSoT ``nav.Planner_config.node_info`` (``car_length`` / ``car_width``)."""
+    node = (
+        (planner_cfg or {}).get("experiment_info_default") or {}
+    ).get("node_info") or {}
+    return float(node.get("length", 0.90)), float(node.get("width", 0.55))
+
+
 def visualize_map_with_path(
     costmap: np.ndarray,
     elevation_map: np.ndarray,
@@ -44,6 +52,9 @@ def visualize_map_with_path(
     map_center: np.ndarray,
     map_size: int,
     resolution_inv: float,
+    car_length: float,
+    car_width: float,
+    speed_scale: float = 5.0,
 ) -> np.ndarray:
     """Cost (pink/white) + elev blend, path, goal circle, robot box.
 
@@ -51,6 +62,7 @@ def visualize_map_with_path(
     cost >= 250 is free (elevation grey); below that is pink (obstacle).
     World XY relative to ``map_center``; image origin after flip matches
     cv2.imshow (top-left) vs planner map (bottom-left).
+    Box size is SSoT ``Planner_config.node_info`` length × width (m).
     """
     display_img = paint_cost_elev_map(costmap, elevation_map, map_size)
 
@@ -75,17 +87,17 @@ def visualize_map_with_path(
         path_Y = np.clip(
             (path_disp[..., 1] * resolution_inv) + map_size // 2, 0, map_size - 1
         ).astype(int)
-        car_width_px = max(1, int(0.15 * resolution_inv))
+        car_width_px = max(1, int(round(float(car_width) * resolution_inv)))
 
         direction = path[..., -1] if path.shape[-1] > 4 else np.ones(len(path))
-        velocity = path[..., 3] if path.shape[-1] > 3 else np.ones(len(path))
-        vmin = float(np.min(velocity))
-        vmax = float(np.max(velocity))
-        if vmax > vmin:
-            velocity_norm = (velocity - vmin) / (vmax - vmin)
-        else:
-            velocity_norm = np.ones_like(velocity, dtype=np.float64)
-        velocity_color = np.clip(velocity_norm * 255, 0, 255).astype(np.uint8)
+        velocity = (
+            np.abs(path[..., 3])
+            if path.shape[-1] > 3
+            else np.ones(len(path), dtype=np.float64)
+        )
+        # BeamNG / in_the_loop: brightness is |v| / scale, not min-max of this path.
+        scale = float(speed_scale) if float(speed_scale) > 1e-6 else 5.0
+        velocity_color = np.clip((velocity / scale) * 255.0, 0, 255).astype(np.uint8)
 
         for i in range(len(path_X) - 1):
             if float(direction[i]) >= 0:
@@ -106,8 +118,8 @@ def visualize_map_with_path(
         theta = np.pi - float(state[2])
         x_px = int(x * resolution_inv + map_size // 2)
         y_px = int(y * resolution_inv + map_size // 2)
-        car_width_px = max(2, int(0.29 * resolution_inv))
-        car_height_px = max(2, int(0.15 * resolution_inv))
+        car_width_px = max(2, int(float(car_length) * resolution_inv))
+        car_height_px = max(2, int(float(car_width) * resolution_inv))
         half_width = car_width_px // 2
         half_height = car_height_px // 2
         corners = np.array(
@@ -140,6 +152,8 @@ class PlannerVisFrame:
     wp_radius: float
     ok: bool
     expansions: int
+    car_length: float
+    car_width: float
     note: str = ""
 
 
@@ -206,6 +220,9 @@ class PlannerVisWorker:
                     frame.map_center,
                     self._map_size,
                     resolution_inv,
+                    frame.car_length,
+                    frame.car_width,
+                    speed_scale=5.0,
                 )
                 status = "OK" if frame.ok else "FAIL"
                 label = (
