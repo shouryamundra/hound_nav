@@ -8,7 +8,10 @@ Cost     tracking error to the planned path, plus a lethal-cell penalty from the
 
 Config keys (SSoT ``nav:``): MPPI_config {ROLLOUTS, TIMESTEPS}, Dynamics_config {dt, tau, v_max, a_max},
 Sampling_config {noise, temperature}, Cost_config {pos_w, heading_w, vel_w, end_w, lethal_w, car_bb_length,
-car_bb_width}, Map_config {map_size, map_res}.
+car_bb_width, hold_yaw (optional)}, Map_config {map_size, map_res}.
+
+``hold_yaw`` (rad, world frame) replaces the path's heading as the heading reference. Use it when the planner does not
+rotate: it replans from the robot's current heading, so otherwise nothing pulls a drifting heading back.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ class HolonomicMPPI:
         self.sigma = torch.tensor(sampling_cfg["noise"], **f)
         self.temperature = float(sampling_cfg["temperature"])
         self.w = {k: float(cost_cfg[k + "_w"]) for k in ("pos", "heading", "vel", "end", "lethal")}
+        self.hold_yaw = cost_cfg.get("hold_yaw")
         half_l, half_w = cost_cfg["car_bb_length"] / 2, cost_cfg["car_bb_width"] / 2
         self.corners = torch.tensor([[0, 0], [half_l, half_w], [half_l, -half_w], [-half_l, half_w],
                                      [-half_l, -half_w]], **f)
@@ -73,6 +77,8 @@ class HolonomicMPPI:
     def step(self, state, ref) -> np.ndarray:
         """state: 6 numbers, ref: T x 6 desired states one dt apart  ->  command vx, vy, wz."""
         state, ref = (torch.as_tensor(a, device=self.U.device, dtype=torch.float32) for a in (state, ref))
+        if self.hold_yaw is not None:
+            ref[:, 2] = self.hold_yaw
         self.U = self.U.roll(-1, 0)                                         # warm start from the last solution
         self.U[-1] = self.U[-2]
         U = (self.U + torch.randn((self.K, self.T, 3), device=self.U.device) * self.sigma).clamp(-self.v_max, self.v_max)
