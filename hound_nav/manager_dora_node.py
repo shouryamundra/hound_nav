@@ -38,7 +38,7 @@ from hound_nav.pdef_buffer import LocalMapSnapshot, PDefBuffer
 from hound_nav.pdef_codec import pack_map, pack_pdef, pack_track, unpack_plan
 from hound_nav.planner_viz import PlannerVisFrame, PlannerVisWorker, car_dims_m
 from hound_nav.traj_buffer import TrajBuffer
-from hound_nav.utils import update_goal
+from hound_nav.utils import goal_with_yaw, update_goal
 
 
 def _img_f32(msg) -> Optional[np.ndarray]:
@@ -212,7 +212,9 @@ class ManagerRos(RosNode):
         """RViz 2D Goal Pose: replace mission with this one waypoint."""
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
-        self._buffer.set_waypoints(np.array([[x, y]], dtype=np.float64))
+        q = msg.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._buffer.set_waypoints(np.array([[x, y, yaw]], dtype=np.float64))
         frame = str(msg.header.frame_id or "")
         now = time.perf_counter()
         same = (
@@ -225,7 +227,7 @@ class ManagerRos(RosNode):
         self._goal_log_t = now
         self._goal_log_xy = (x, y)
         print(
-            f"[hound_manager] rviz goal: ({x:.2f},{y:.2f}) frame={frame!r}",
+            f"[hound_manager] rviz goal: ({x:.2f},{y:.2f}) yaw={yaw:.2f} frame={frame!r}",
             flush=True,
         )
 
@@ -515,7 +517,7 @@ def main() -> None:
             return
         start = np.copy(state)
         query_t = time.perf_counter()
-        goal_arr = np.asarray(goal, dtype=np.float64)
+        goal_arr = goal_with_yaw(goal, pdef.target_wp, current_wp_index, state[5])
         last_query = {
             "costmap": np.copy(pdef.costmap),
             "height": np.copy(pdef.height_bev),
@@ -546,7 +548,7 @@ def main() -> None:
             _maybe_send_pdef._log_t = now
             print(
                 f"[hound_manager] pdef exp={expansion_limit} "
-                f"goal=({float(goal[0]):.2f},{float(goal[1]):.2f})",
+                f"goal=({float(goal_arr[0]):.2f},{float(goal_arr[1]):.2f}) yaw={float(goal_arr[2]):.2f}",
                 flush=True,
             )
 

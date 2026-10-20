@@ -76,6 +76,15 @@ def update_goal(
     )
 
 
+def goal_with_yaw(goal_xy, target_wp, index, current_yaw):
+    """Planner goal x, y, yaw. Waypoints are x, y[, yaw]: use the yaw of the waypoint the goal sits on. A goal short of
+    its waypoint (the lookahead carrot) or a waypoint without yaw keeps the current heading."""
+    goal_xy = np.asarray(goal_xy, dtype=np.float64)[:2]
+    wp = np.asarray(target_wp, dtype=np.float64)[min(index, len(target_wp) - 1)]
+    on_waypoint = np.allclose(goal_xy, wp[:2]) and wp.size > 2
+    return np.array([*goal_xy, wp[2] if on_waypoint else current_yaw])
+
+
 def wrap_pi(angle: np.ndarray | float) -> np.ndarray | float:
     """Wrap angle(s) to (-pi, pi]."""
     return (np.asarray(angle) + np.pi) % (2.0 * np.pi) - np.pi

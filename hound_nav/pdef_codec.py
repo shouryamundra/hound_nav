@@ -86,7 +86,7 @@ def pack_pdef(
     expansion_limit: int,
     query_t: float = 0.0,
 ) -> Tuple[pa.Array, Dict[str, Any]]:
-    """Planner query: HxWx2 [cost, height] + start/goal in metadata."""
+    """Planner query: HxWx2 [cost, height] + start and goal (x, y[, yaw]) in metadata."""
     cost = np.ascontiguousarray(costmap, dtype=np.float32)
     hgt = np.ascontiguousarray(height, dtype=np.float32)
     if cost.shape != hgt.shape:
@@ -99,7 +99,7 @@ def pack_pdef(
         "map_res": float(map_res),
         "map_center": np.asarray(map_center, dtype=np.float64).reshape(-1).tolist(),
         "start": np.asarray(start, dtype=np.float64).reshape(-1).tolist(),
-        "goal": np.asarray(goal, dtype=np.float64).reshape(-1)[:2].tolist(),
+        "goal": np.asarray(goal, dtype=np.float64).reshape(-1)[:3].tolist(),
         "hysteresis": int(hysteresis),
         "expansion_limit": int(expansion_limit),
         "state_dims": int(np.asarray(start).reshape(-1).size),
@@ -128,7 +128,7 @@ def unpack_pdef(buf: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
         "map_center": np.asarray(meta.get("map_center", [0.0, 0.0]), dtype=np.float64),
         "map_res": float(meta.get("map_res", 0.25)),
         "start": start[:state_dims].copy(),
-        "goal": goal[:2].copy(),
+        "goal": goal[:3].copy(),
         "hysteresis": int(meta.get("hysteresis", 100)),
         "expansion_limit": int(meta.get("expansion_limit", 5000)),
         "state_dims": state_dims,

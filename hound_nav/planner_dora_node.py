@@ -27,18 +27,16 @@ from dora import Node
 from hound_nav.pdef_codec import pack_plan, unpack_pdef
 
 
-def _holonomic_endpoints(start_state, goal_xy, shift, can_rotate):
-    """holonomic_6D start and goal: x, y, yaw, vx, vy, omega (body frame). The goal is at rest, heading free.
-
-    Without angular acceleration in the planner's action set it cannot change omega, so it plans from omega = 0
-    instead of carrying the robot's current yaw rate along the whole path."""
-    omega = start_state[14] if can_rotate else 0.0
+def _holonomic_endpoints(start_state, goal_pose, shift):
+    """holonomic_6D start and goal: x, y, yaw, vx, vy, omega (body frame). The goal is at rest, at goal_pose's yaw
+    (the current heading if the goal has none)."""
     start = torch.tensor(
-        [*(start_state[:2] + shift), start_state[5], start_state[6], start_state[7], omega],
+        [*(start_state[:2] + shift), start_state[5], start_state[6], start_state[7], start_state[14]],
         dtype=torch.float32,
     )
     goal = torch.zeros(6, dtype=torch.float32)
-    goal[:2] = torch.from_numpy(goal_xy[:2] + shift)
+    goal[:2] = torch.from_numpy(goal_pose[:2] + shift)
+    goal[2] = float(goal_pose[2]) if len(goal_pose) > 2 else float(start_state[5])
     return start, goal
 
 
@@ -57,7 +55,6 @@ def _search(
     cruise_speed_mps: float,
     min_goal_dist_m: float = 0.3,
     holonomic: bool = False,
-    can_rotate: bool = True,
 ) -> tuple[bool, Optional[np.ndarray], int]:
     goal_dist = float(np.linalg.norm(start_state[:2] - goal_xy[:2]))
     # Too close to bother searching (already at goal). Was hard-coded 5.0 m,
@@ -78,7 +75,7 @@ def _search(
     offset = map_res * np.array(bitmap.shape[:2], dtype=np.float64) * 0.5
 
     if holonomic:
-        start, goal = _holonomic_endpoints(start_state, goal_xy, offset - map_center, can_rotate)
+        start, goal = _holonomic_endpoints(start_state, goal_xy, offset - map_center)
     else:
         start = torch.zeros(4, dtype=torch.float32)
         goal = torch.zeros(4, dtype=torch.float32)
@@ -127,7 +124,6 @@ def main() -> None:
     )
 
     holonomic = is_holonomic(planner_cfg)
-    can_rotate = any(planner_cfg["experiment_info_default"]["node_info"].get("alpha_list", [1.0]))
     planner = None
     dt_sum = 0.0
     dt_n = 0
@@ -176,7 +172,6 @@ def main() -> None:
                 stop=False,
                 cruise_speed_mps=cruise_speed_mps,
                 holonomic=holonomic,
-                can_rotate=can_rotate,
             )
         except Exception:
             traceback.print_exc()
