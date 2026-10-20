@@ -27,6 +27,21 @@ from dora import Node
 from hound_nav.pdef_codec import pack_plan, unpack_pdef
 
 
+def _holonomic_endpoints(start_state, goal_xy, shift, can_rotate):
+    """holonomic_6D start and goal: x, y, yaw, vx, vy, omega (body frame). The goal is at rest, heading free.
+
+    Without angular acceleration in the planner's action set it cannot change omega, so it plans from omega = 0
+    instead of carrying the robot's current yaw rate along the whole path."""
+    omega = start_state[14] if can_rotate else 0.0
+    start = torch.tensor(
+        [*(start_state[:2] + shift), start_state[5], start_state[6], start_state[7], omega],
+        dtype=torch.float32,
+    )
+    goal = torch.zeros(6, dtype=torch.float32)
+    goal[:2] = torch.from_numpy(goal_xy[:2] + shift)
+    return start, goal
+
+
 def _search(
     planner: Any,
     *,
@@ -41,6 +56,8 @@ def _search(
     stop: bool,
     cruise_speed_mps: float,
     min_goal_dist_m: float = 0.3,
+    holonomic: bool = False,
+    can_rotate: bool = True,
 ) -> tuple[bool, Optional[np.ndarray], int]:
     goal_dist = float(np.linalg.norm(start_state[:2] - goal_xy[:2]))
     # Too close to bother searching (already at goal). Was hard-coded 5.0 m,
@@ -60,22 +77,25 @@ def _search(
     bitmap[..., 1] = torch.from_numpy(np.ascontiguousarray(heightmap))
     offset = map_res * np.array(bitmap.shape[:2], dtype=np.float64) * 0.5
 
-    start = torch.zeros(4, dtype=torch.float32)
-    goal = torch.zeros(4, dtype=torch.float32)
-    start[:2] = torch.from_numpy(start_state[:2] + offset - map_center)
-    goal[:2] = torch.from_numpy(goal_xy[:2] + offset - map_center)
-    start[2] = float(start_state[5])
-    start[3] = float(np.linalg.norm(start_state[6:8]))
-    if start[3] > 1.0 and start_state[6] > 0.5:
-        v = start_state[6:8]
-        theta = float(start_state[5])
-        dx = v[0] * np.cos(theta) - v[1] * np.sin(theta)
-        dy = v[0] * np.sin(theta) + v[1] * np.cos(theta)
-        start[2] = float(np.arctan2(dy, dx))
-    dx = float(goal[0] - start[0])
-    dy = float(goal[1] - start[1])
-    goal[2] = float(np.arctan2(dy, dx))
-    goal[3] = 0.0 if stop else float(cruise_speed_mps)
+    if holonomic:
+        start, goal = _holonomic_endpoints(start_state, goal_xy, offset - map_center, can_rotate)
+    else:
+        start = torch.zeros(4, dtype=torch.float32)
+        goal = torch.zeros(4, dtype=torch.float32)
+        start[:2] = torch.from_numpy(start_state[:2] + offset - map_center)
+        goal[:2] = torch.from_numpy(goal_xy[:2] + offset - map_center)
+        start[2] = float(start_state[5])
+        start[3] = float(np.linalg.norm(start_state[6:8]))
+        if start[3] > 1.0 and start_state[6] > 0.5:
+            v = start_state[6:8]
+            theta = float(start_state[5])
+            dx = v[0] * np.cos(theta) - v[1] * np.sin(theta)
+            dy = v[0] * np.sin(theta) + v[1] * np.cos(theta)
+            start[2] = float(np.arctan2(dy, dx))
+        dx = float(goal[0] - start[0])
+        dy = float(goal[1] - start[1])
+        goal[2] = float(np.arctan2(dy, dx))
+        goal[3] = 0.0 if stop else float(cruise_speed_mps)
 
     # IGHA* pybind expects int hysteresis_threshold (not float).
     success = planner.search(
@@ -95,7 +115,7 @@ def _search(
 def main() -> None:
     setup_dependency_paths()
     from ighastar.scripts.common_utils import create_planner
-    from hound_nav.nav_config import load_hound_nav_config, stack_config
+    from hound_nav.nav_config import is_holonomic, load_hound_nav_config, stack_config
 
     launch_cfg = load_hound_nav_config()
     Config = stack_config(launch_cfg)
@@ -106,6 +126,8 @@ def main() -> None:
         planner_cfg["experiment_info_default"].get("bidirectional", False)
     )
 
+    holonomic = is_holonomic(planner_cfg)
+    can_rotate = any(planner_cfg["experiment_info_default"]["node_info"].get("alpha_list", [1.0]))
     planner = None
     dt_sum = 0.0
     dt_n = 0
@@ -153,6 +175,8 @@ def main() -> None:
                 expansion_limit=pdef["expansion_limit"],
                 stop=False,
                 cruise_speed_mps=cruise_speed_mps,
+                holonomic=holonomic,
+                can_rotate=can_rotate,
             )
         except Exception:
             traceback.print_exc()

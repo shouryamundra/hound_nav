@@ -12,7 +12,8 @@ from hound_nav.utils import pose_distances
 class TrajBuffer:
     """Latest world-frame path. First slice: replace-only; append/truncate for later."""
 
-    def __init__(self) -> None:
+    def __init__(self, ncols: int = 4) -> None:
+        self.ncols = ncols  # 4: x,y,yaw,v   6: x,y,yaw,vx,vy,omega
         self._path: Optional[np.ndarray] = None
 
     def replace(self, path: np.ndarray) -> None:
@@ -20,21 +21,21 @@ class TrajBuffer:
         if arr.ndim != 2 or arr.shape[0] < 2:
             self._path = None
             return
-        if arr.shape[1] < 4:
-            pad = np.zeros((arr.shape[0], 4), dtype=np.float64)
+        if arr.shape[1] < self.ncols:
+            pad = np.zeros((arr.shape[0], self.ncols), dtype=np.float64)
             pad[:, : arr.shape[1]] = arr
             arr = pad
-        self._path = np.ascontiguousarray(arr[:, :4])
+        self._path = np.ascontiguousarray(arr[:, : self.ncols])
 
     def append(self, path: np.ndarray) -> None:
         arr = np.asarray(path, dtype=np.float64)
         if arr.ndim != 2 or arr.shape[0] < 1:
             return
-        if arr.shape[1] < 4:
-            pad = np.zeros((arr.shape[0], 4), dtype=np.float64)
+        if arr.shape[1] < self.ncols:
+            pad = np.zeros((arr.shape[0], self.ncols), dtype=np.float64)
             pad[:, : arr.shape[1]] = arr
             arr = pad
-        arr = arr[:, :4]
+        arr = arr[:, : self.ncols]
         if self._path is None or len(self._path) == 0:
             self.replace(arr)
             return
@@ -151,11 +152,11 @@ class TrajBuffer:
         i = int(np.floor(i_f))
         a = float(i_f - i)
         if i >= len(path) - 1:
-            return np.copy(path[-1, :4])
+            return np.copy(path[-1, : self.ncols])
         if a <= 1e-9:
-            return np.copy(path[i, :4])
+            return np.copy(path[i, : self.ncols])
         j = min(i + 1, len(path) - 1)
-        row = (1.0 - a) * path[i, :4] + a * path[j, :4]
+        row = (1.0 - a) * path[i, : self.ncols] + a * path[j, : self.ncols]
         row[2] = path[i, 2] if a < 0.5 else path[j, 2]
         return row
 
@@ -183,9 +184,9 @@ class TrajBuffer:
         body[:, :2] -= pos
         t = int(timesteps)
         if ref_i < len(body) - t:
-            return body[ref_i : ref_i + t, :4], False
-        out = np.zeros((t, 4), dtype=np.float64)
-        avail = body[ref_i:, :4]
+            return body[ref_i : ref_i + t, : self.ncols], False
+        out = np.zeros((t, self.ncols), dtype=np.float64)
+        avail = body[ref_i:, : self.ncols]
         out[: len(avail)] = avail
         if len(avail) > 0:
             out[len(avail) :, :3] = out[len(avail) - 1, :3]

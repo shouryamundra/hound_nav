@@ -71,3 +71,11 @@ ros2 launch hound_core hound_core.launch.py
 - Do not use `IGHAStarMP`; planner is in-process IGHA* in its Dora node.
 - First-slice traj buffer replaces the whole plan on each successful search.
 - Planner start is the live robot (`control_state`). OpenCV box is that pose, not a simulated plant.
+
+## Holonomic mode (mecanum / omni base)
+
+Set `Planner_config.experiment_info_default.node_info.node_type: holonomic_6D` (IGHAStar branch `R6`). The path
+buffer then carries 6 columns (x, y, yaw, vx, vy, omega), the planner node plans in the 6D state, and the dataflow
+should run `holonomic_controller_dora_node.py` instead of `controller_dora_node.py`. That controller runs
+`holonomic_mppi.HolonomicMPPI` and publishes a `geometry_msgs/Twist` (body vx, vy, wz) on `cmd_topic`, which is what
+`hound_core`'s `HolonomicLlController` subscribes to. Config keys are listed at the top of `holonomic_mppi.py`.

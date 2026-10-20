@@ -338,7 +338,7 @@ def _yaw_to_quat(yaw: float) -> Quaternion:
 def main() -> None:
     setup_dependency_paths()
 
-    from hound_nav.nav_config import as_float, load_hound_nav_config, stack_config
+    from hound_nav.nav_config import as_float, is_holonomic, load_hound_nav_config, stack_config
 
     launch_cfg = load_hound_nav_config()
     Config = stack_config(launch_cfg)
@@ -355,7 +355,7 @@ def main() -> None:
     unstuck = int(planner_cfg["unstuck_expansions"])
 
     buffer = PDefBuffer(state_dims=int(launch_cfg.get("control_state_dims", 17)))
-    traj = TrajBuffer()
+    traj = TrajBuffer(ncols=6 if is_holonomic(planner_cfg) else 4)
     rclpy.init()
     ros = ManagerRos(buffer, launch_cfg)
     executor = SingleThreadedExecutor()
@@ -561,7 +561,7 @@ def main() -> None:
         last_track_stamp = stamp
         world = traj.get()
         if world is None:
-            horizon = np.zeros((timesteps, 4), dtype=np.float64)
+            horizon = np.zeros((timesteps, traj.ncols), dtype=np.float64)
             hold = True
         else:
             yaw = float(state[5]) if state.shape[0] > 5 else 0.0
@@ -573,7 +573,7 @@ def main() -> None:
                 screw_length_m=screw_length_m,
             )
             if horizon is None:
-                horizon = np.zeros((timesteps, 4), dtype=np.float64)
+                horizon = np.zeros((timesteps, traj.ncols), dtype=np.float64)
                 hold = True
             else:
                 hold = bool(stop or goal_reached)

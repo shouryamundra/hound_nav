@@ -33,6 +33,11 @@ def as_float(x: Any, default: float = 0.0) -> float:
     return float(x)
 
 
+def is_holonomic(planner_cfg: Dict[str, Any]) -> bool:
+    """True for the 6D holonomic IGHA* environment (path rows: x, y, yaw, vx, vy, omega)."""
+    return planner_cfg["experiment_info_default"]["node_info"]["node_type"] == "holonomic_6D"
+
+
 def stack_config(launch_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """MPPI / planner stack dict (must be embedded in HOUND_NAV_CONFIG from SSoT)."""
     missing = [k for k in _STACK_KEYS if k not in launch_cfg]
