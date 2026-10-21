@@ -70,6 +70,12 @@ class HolonomicMPPI:
         return step.sum(1) + self.w["end"] * step[:, -1]
 
     @torch.no_grad()
+    def predict(self, state) -> np.ndarray:
+        """The states (T x 6) the current control sequence is expected to produce from `state`, for display."""
+        s0 = torch.as_tensor(state, device=self.U.device, dtype=torch.float32)
+        return self.rollout(s0, self.U[None])[0].cpu().numpy()
+
+    @torch.no_grad()
     def step(self, state, ref) -> np.ndarray:
         """state: 6 numbers, ref: T x 6 desired states one dt apart  ->  command vx, vy, wz."""
         state, ref = (torch.as_tensor(a, device=self.U.device, dtype=torch.float32) for a in (state, ref))

@@ -2,6 +2,9 @@
 """Dora controller: MPPI track only. Inputs map + track → AckermannDriveStamped.
 
 MPPI samples physical units: steer [rad], wheelspeed [m/s] — published as-is.
+
+With the ``holonomic_6D`` planner it runs HolonomicMPPI instead and publishes a geometry_msgs/Twist (body vx, vy, wz),
+which is what hound_core's HolonomicLlController subscribes to, plus the path MPPI expects to drive (for display).
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ _HOUND_NAV_ROOT = Path(__file__).resolve().parent.parent
 if _HOUND_NAV_ROOT.is_dir():
     sys.path.insert(0, str(_HOUND_NAV_ROOT))
 
+import math
 import time
 import traceback
 from typing import Any, Dict
@@ -28,17 +32,84 @@ import rclpy
 import torch
 from ackermann_msgs.msg import AckermannDriveStamped
 from dora import Node
+from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Path as PathMsg
 from rclpy.node import Node as RosNode
 from rclpy.qos import qos_profile_sensor_data
 from hound_nav.pdef_codec import unpack_map, unpack_track
 
 
+def _run_holonomic(launch_cfg: Dict[str, Any], Config: Dict[str, Any]) -> None:
+    """HolonomicMPPI: map + track in, Twist and MPPI's expected path out."""
+    from hound_nav.holonomic_mppi import HolonomicMPPI
+
+    rclpy.init()
+    ros = RosNode("hound_nav_holonomic_controller")
+    cmd_pub = ros.create_publisher(
+        Twist, str(launch_cfg.get("cmd_topic", "/hound_nav/cmd_ackermann")), qos_profile_sensor_data
+    )
+    path_pub = ros.create_publisher(
+        PathMsg, str(launch_cfg.get("mppi_path_topic", "/hound_nav/mppi_path")), qos_profile_sensor_data
+    )
+    dora = Node()
+    mppi = HolonomicMPPI(
+        Config["MPPI_config"], Config["Dynamics_config"], Config["Sampling_config"], Config["Cost_config"], Config["Map_config"]
+    )
+
+    def publish(vx: float, vy: float, wz: float) -> None:
+        cmd = Twist()
+        cmd.linear.x, cmd.linear.y, cmd.angular.z = float(vx), float(vy), float(wz)
+        cmd_pub.publish(cmd)
+
+    def publish_prediction(states) -> None:
+        path = PathMsg()
+        path.header.frame_id = "odom"
+        for x, y, yaw, *_ in states:
+            pose = PoseStamped()
+            pose.header.frame_id = "odom"
+            pose.pose.position.x, pose.pose.position.y = float(x), float(y)
+            pose.pose.orientation.z, pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            path.poses.append(pose)
+        path_pub.publish(path)
+
+    map_ready = False
+    for event in dora:
+        if event is None or event.get("type") == "STOP":
+            break
+        if event.get("type") != "INPUT":
+            continue
+        try:
+            if event.get("id") == "map":
+                m = unpack_map(event.get("value"), event.get("metadata") or {})
+                mppi.set_costmap(m["costmap"], m["map_center"])
+                map_ready = True
+            elif event.get("id") == "track" and map_ready:
+                tr = unpack_track(event.get("value"), event.get("metadata") or {})
+                s, ref = tr["state"], tr["reference"].copy()        # state[5] yaw, [6:8] body v, [14] yaw rate
+                if tr["goal_reached"] or len(ref) < 1:
+                    mppi.reset()
+                    publish(0.0, 0.0, 0.0)
+                    continue
+                ref[:, :2] += s[:2]                                  # reference is robot-relative in xy
+                state6 = [s[0], s[1], s[5], s[6], s[7], s[14]]
+                publish(*mppi.step(state6, ref))
+                publish_prediction(mppi.predict(state6))
+        except Exception:
+            traceback.print_exc()
+
+    ros.destroy_node()
+    if rclpy.ok():
+        rclpy.shutdown()
+
+
 def main() -> None:
     setup_dependency_paths()
-    from hound_nav.nav_config import load_hound_nav_config, stack_config
+    from hound_nav.nav_config import is_holonomic, load_hound_nav_config, stack_config
 
     launch_cfg = load_hound_nav_config()
     Config = stack_config(launch_cfg)
+    if is_holonomic(Config["Planner_config"]):
+        return _run_holonomic(launch_cfg, Config)
     Dynamics_config = dict(Config["Dynamics_config"])
     Cost_config = Config["Cost_config"]
     Sampling_config = Config["Sampling_config"]

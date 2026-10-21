@@ -29,7 +29,6 @@ setup(
             "nav_manager = hound_nav.manager_dora_node:main",
             "nav_planner = hound_nav.planner_dora_node:main",
             "nav_controller = hound_nav.controller_dora_node:main",
-            "nav_holonomic_controller = hound_nav.holonomic_controller_dora_node:main",
             "jit_build_cuda = hound_nav.jit_build:main",
             "log_planning_problems = hound_nav.log_planning_problems:main",
             "run_bag_playback = hound_nav.run_bag_playback:main",

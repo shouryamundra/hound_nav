@@ -74,8 +74,11 @@ ros2 launch hound_core hound_core.launch.py
 
 ## Holonomic mode (mecanum / omni base)
 
-Set `Planner_config.experiment_info_default.node_info.node_type: holonomic_6D` (IGHAStar branch `R6`). The path
-buffer then carries 6 columns (x, y, yaw, vx, vy, omega), the planner node plans in the 6D state, and the dataflow
-should run `holonomic_controller_dora_node.py` instead of `controller_dora_node.py`. That controller runs
-`holonomic_mppi.HolonomicMPPI` and publishes a `geometry_msgs/Twist` (body vx, vy, wz) on `cmd_topic`, which is what
-`hound_core`'s `HolonomicLlController` subscribes to. Config keys are listed at the top of `holonomic_mppi.py`.
+Set `Planner_config.experiment_info_default.node_info.node_type: holonomic_6D` (IGHAStar branch `R6`). Then:
+- the path buffer carries 6 columns (x, y, yaw, vx, vy, omega) and the planner node plans in that 6D state;
+- the `/goal_pose` heading is passed to the planner as the goal yaw;
+- `controller_dora_node.py` runs `holonomic_mppi.HolonomicMPPI` instead of the car MPPI. It publishes a
+  `geometry_msgs/Twist` (body vx, vy, wz) on `cmd_topic`, which is what `hound_core`'s `HolonomicLlController` subscribes
+  to, and the path MPPI expects to drive on `mppi_path_topic` (for display).
+
+Config keys are listed at the top of `holonomic_mppi.py`.
