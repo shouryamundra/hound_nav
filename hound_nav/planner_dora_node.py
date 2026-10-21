@@ -28,7 +28,7 @@ from hound_nav.pdef_codec import pack_plan, unpack_pdef
 
 
 def _holonomic_endpoints(start_state, goal_pose, shift):
-    """holonomic_6D start and goal: x, y, yaw, vx, vy, omega (body frame). The goal is at rest, at goal_pose's yaw
+    """opendubs start and goal: x, y, yaw, vx, vy, omega (body frame). The goal is at rest, at goal_pose's yaw
     (the current heading if the goal has none)."""
     start = torch.tensor(
         [*(start_state[:2] + shift), start_state[5], start_state[6], start_state[7], start_state[14]],

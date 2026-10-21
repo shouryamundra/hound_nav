@@ -3,7 +3,7 @@
 
 MPPI samples physical units: steer [rad], wheelspeed [m/s] — published as-is.
 
-With the ``holonomic_6D`` planner it runs HolonomicMPPI instead and publishes a geometry_msgs/Twist (body vx, vy, wz),
+With the ``opendubs`` planner it runs HolonomicMPPI instead and publishes a geometry_msgs/Twist (body vx, vy, wz),
 which is what hound_core's HolonomicLlController subscribes to, plus the path MPPI expects to drive (for display).
 """
 

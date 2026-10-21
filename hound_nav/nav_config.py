@@ -34,8 +34,8 @@ def as_float(x: Any, default: float = 0.0) -> float:
 
 
 def is_holonomic(planner_cfg: Dict[str, Any]) -> bool:
-    """True for the 6D holonomic IGHA* environment (path rows: x, y, yaw, vx, vy, omega)."""
-    return planner_cfg["experiment_info_default"]["node_info"]["node_type"] == "holonomic_6D"
+    """True for the opendubs (6D holonomic) IGHA* environment (path rows: x, y, yaw, vx, vy, omega)."""
+    return planner_cfg["experiment_info_default"]["node_info"]["node_type"] == "opendubs"
 
 
 def stack_config(launch_cfg: Dict[str, Any]) -> Dict[str, Any]:
